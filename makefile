@@ -5,4 +5,4 @@ server: server.c main.c
 		$(CXX) -o $(Obj) -g $^
 
 clean:
-	rm -rf server
+	rm -rf main
