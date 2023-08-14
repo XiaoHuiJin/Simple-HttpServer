@@ -1,6 +1,16 @@
 #ifndef _SERVER_H
 #define _SERVER_H
 
+#include <pthread.h>
+
+typedef struct FD_INFO
+{
+    int fd;             // socket fd
+    int ep_fd;          // epoll fd
+    pthread_t pid;      // 线程id
+} FD_INFO;
+
+
 //初始化监听 fd
 int init_listen_fd(unsigned short int pot);
 
@@ -8,10 +18,10 @@ int init_listen_fd(unsigned short int pot);
 int epoll_run(int lfd);
 
 //与客户端建立连接
-int accept_clinet(int lfd, int ep_fd);
+void* accept_clinet(void *arg);
 
 //接收Http请求协议
-int rec_http_request(int cfd, int ep_fd);
+void* rec_http_request(void *arg);
 
 //解析Http请求行
 int parse_line(const char *line, int cfd);

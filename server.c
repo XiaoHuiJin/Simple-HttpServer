@@ -93,16 +93,23 @@ int epoll_run(int lfd)
 
         for (int i = 0; i < num; i++)
         {
-            int fd = evs[i].data.fd;
-            if (fd == lfd)
+            FD_INFO *fd_info = (struct FD_INFO *) malloc(sizeof(FD_INFO));
+            if (fd_info == NULL)
+            {
+                error_print("fd info malloc error!");
+                return -1;
+            }
+            fd_info->fd = evs[i].data.fd;
+            fd_info->ep_fd = ep_fd;
+            if (fd_info->fd == lfd)
             {
                 // 建立新链接
-                accept_clinet(lfd, ep_fd);
+                pthread_create(&fd_info->pid, NULL, accept_clinet, fd_info);
             }
             else
             {
                 // 接收对端的数据
-                rec_http_request(fd, ep_fd);
+                pthread_create(&fd_info->pid, NULL, rec_http_request, fd_info);
             }
         }
     }
@@ -111,14 +118,15 @@ int epoll_run(int lfd)
 }
 
 // 与客户端建立连接
-int accept_clinet(int lfd, int ep_fd)
+void* accept_clinet(void *arg)
 {
+    FD_INFO *fd_info = (FD_INFO *)(arg);
     // 1. 得到cfd
-    int cfd = accept(lfd, NULL, NULL);
+    int cfd = accept(fd_info->fd, NULL, NULL);
     if (-1 == cfd)
     {
         error_print("accept error!");
-        return -1;
+        return;
     }
 
     // 2. 设置非阻塞
@@ -130,26 +138,27 @@ int accept_clinet(int lfd, int ep_fd)
     struct epoll_event ev;
     ev.data.fd = cfd;
     ev.events = EPOLLIN | EPOLLET; // 边缘非阻塞
-    int ret = epoll_ctl(ep_fd, EPOLL_CTL_ADD, cfd, &ev);
+    int ret = epoll_ctl(fd_info->ep_fd, EPOLL_CTL_ADD, cfd, &ev);
     if (-1 == ret)
     {
         error_print("epoll add connect fd error!");
-        return -1;
+        return;
     }
-
-    return 0;
+    free(fd_info);
+    return;
 }
 
 // 接收Http请求
-int rec_http_request(int cfd, int ep_fd)
+void* rec_http_request(void *arg)
 {
+    FD_INFO *fd_info = (FD_INFO *)(arg);
     printf("rev request from client---------------------\n");
     char tmp[1024] = {0};  // 存放接收的数据
     char buff[4096] = {0}; // 写入缓冲区的数据
     int len = 0;
     int total = 0;
 
-    while ((len = recv(cfd, tmp, sizeof(tmp), 0)) > 0)
+    while ((len = recv(fd_info->fd, tmp, sizeof(tmp), 0)) > 0)
     {
         if ((total + len) < sizeof(buff))
         {
@@ -166,22 +175,22 @@ int rec_http_request(int cfd, int ep_fd)
         char *pos = strstr(buff, "\r\n");
         int len = pos - buff;
         buff[len] = '\0';
-        parse_line(buff, cfd);
+        parse_line(buff, fd_info->fd);
     }
     else if (len == 0)
     {
         // 客户端断开了连接
-        epoll_ctl(ep_fd, EPOLL_CTL_DEL, cfd, NULL);
-        close(cfd);
-        return -1;
+        epoll_ctl(fd_info->ep_fd, EPOLL_CTL_DEL, fd_info->fd, NULL);
+        close(fd_info->fd);
+        return;
     }
     else
     {
         error_print("recv error!");
-        return -1;
+        return;
     }
-
-    return 0;
+    free(fd_info);
+    return;
 }
 
 // 解析请求行
