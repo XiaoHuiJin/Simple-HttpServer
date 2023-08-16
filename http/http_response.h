@@ -1,27 +1,7 @@
-#ifndef _SERVER_H
-#define _SERVER_H
+#ifndef HTTP_RESPONSE_H
+#define HTTP_RESPONSE_H
 
-#include <pthread.h>
-
-typedef struct FD_INFO
-{
-    int fd;             // socket fd
-    int ep_fd;          // epoll fd
-    pthread_t pid;      // 线程id
-} FD_INFO;
-
-
-//初始化监听 fd
-int init_listen_fd(unsigned short int pot);
-
-//运行epoll机制
-int epoll_run(int lfd);
-
-//与客户端建立连接
-void* accept_clinet(void *arg);
-
-//接收Http请求协议
-void* rec_http_request(void *arg);
+#define HTTP_RESPONSE_ERROR     -1
 
 //解析Http请求行
 int parse_line(const char *line, int cfd);

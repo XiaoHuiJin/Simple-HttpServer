@@ -1,207 +1,30 @@
+#include "http_response.h"
 #include "server.h"
-#include <arpa/inet.h>
-#include "error.h"
-#include <fcntl.h>
+
+#include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <sys/epoll.h>
 #include <string.h>
-#include <errno.h>
 #include <strings.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/sendfile.h>
 #include <dirent.h>
 #include <ctype.h>
-
-// 初始化监听 fd
-int init_listen_fd(unsigned short port)
-{
-    // 创建监听的fd
-    int lfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (-1 == lfd)
-    {
-        error_print("socket error!");
-        return -1;
-    }
-
-    // 设置端口复用
-    int opt = 1;
-    int ret = setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    if (-1 == ret)
-    {
-        error_print("setsockopt error!");
-        return -1;
-    }
-
-    // 绑定lfd
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
-    ret = bind(lfd, (struct sockadd *)&addr, sizeof(addr));
-    if (-1 == ret)
-    {
-        error_print("bind error!");
-        return -1;
-    }
-
-    // 设置监听
-    ret = listen(lfd, 128);
-    if (-1 == ret)
-    {
-        error_print("listen error!");
-        return -1;
-    }
-
-    return lfd;
-}
-
-// 运行epoll机制
-int epoll_run(int lfd)
-{
-    // 1.创建epoll实例
-    int ep_fd = epoll_create(1);
-    if (-1 == ep_fd)
-    {
-        error_print("epoll_create error!");
-        return -1;
-    }
-
-    // 2.lfd上树
-    struct epoll_event ev;
-    ev.data.fd = lfd;
-    ev.events = EPOLLIN;
-    int ret = epoll_ctl(ep_fd, EPOLL_CTL_ADD, lfd, &ev);
-    if (-1 == ret)
-    {
-        error_print("epoll add listen fd error!");
-        return -1;
-    }
-
-    struct epoll_event evs[1024];
-    int size = sizeof(evs) / sizeof(struct epoll_event);
-    // 3.检测
-    while (1)
-    {
-        int num = epoll_wait(ep_fd, evs, size, -1); // 没有读事件时阻塞
-        if (-1 == num)
-        {
-            error_print("epoll_wait error!");
-            return -1;
-        }
-
-        for (int i = 0; i < num; i++)
-        {
-            FD_INFO *fd_info = (struct FD_INFO *) malloc(sizeof(FD_INFO));
-            if (fd_info == NULL)
-            {
-                error_print("fd info malloc error!");
-                return -1;
-            }
-            fd_info->fd = evs[i].data.fd;
-            fd_info->ep_fd = ep_fd;
-            if (fd_info->fd == lfd)
-            {
-                // 建立新链接
-                pthread_create(&fd_info->pid, NULL, accept_clinet, fd_info);
-            }
-            else
-            {
-                // 接收对端的数据
-                pthread_create(&fd_info->pid, NULL, rec_http_request, fd_info);
-            }
-        }
-    }
-
-    return 0;
-}
-
-// 与客户端建立连接
-void* accept_clinet(void *arg)
-{
-    FD_INFO *fd_info = (FD_INFO *)(arg);
-    // 1. 得到cfd
-    int cfd = accept(fd_info->fd, NULL, NULL);
-    if (-1 == cfd)
-    {
-        error_print("accept error!");
-        return;
-    }
-
-    // 2. 设置非阻塞
-    int flag = fcntl(cfd, F_GETFL, 0);
-    flag |= O_NONBLOCK;
-    fcntl(cfd, F_SETFL, flag);
-
-    // 3.将cfd添加到epoll
-    struct epoll_event ev;
-    ev.data.fd = cfd;
-    ev.events = EPOLLIN | EPOLLET; // 边缘非阻塞
-    int ret = epoll_ctl(fd_info->ep_fd, EPOLL_CTL_ADD, cfd, &ev);
-    if (-1 == ret)
-    {
-        error_print("epoll add connect fd error!");
-        return;
-    }
-    free(fd_info);
-    return;
-}
-
-// 接收Http请求
-void* rec_http_request(void *arg)
-{
-    FD_INFO *fd_info = (FD_INFO *)(arg);
-    printf("rev request from client---------------------\n");
-    char tmp[1024] = {0};  // 存放接收的数据
-    char buff[4096] = {0}; // 写入缓冲区的数据
-    int len = 0;
-    int total = 0;
-
-    while ((len = recv(fd_info->fd, tmp, sizeof(tmp), 0)) > 0)
-    {
-        if ((total + len) < sizeof(buff))
-        {
-            memcpy(buff + total, tmp, len);
-        }
-        total += len;
-    }
-
-    // printf("data is: %s\n", buff);
-    // 判断数据是否接收完毕
-    if (len == -1 && errno == EAGAIN)
-    {
-        // 解析请求行
-        char *pos = strstr(buff, "\r\n");
-        int len = pos - buff;
-        buff[len] = '\0';
-        parse_line(buff, fd_info->fd);
-    }
-    else if (len == 0)
-    {
-        // 客户端断开了连接
-        epoll_ctl(fd_info->ep_fd, EPOLL_CTL_DEL, fd_info->fd, NULL);
-        close(fd_info->fd);
-        return;
-    }
-    else
-    {
-        error_print("recv error!");
-        return;
-    }
-    free(fd_info);
-    return;
-}
+#include <fcntl.h>
+#include <errno.h>
 
 // 解析请求行
 int parse_line(const char *line, int cfd)
 {
+    int ret = 0;
+
     char method[12] = {0};
     char path[1024] = {0};
 
-    printf("parse_line: buff is: %s\n", line);
+    // printf("parse_line: buff is: %s\n", line);
     sscanf(line, "%[^ ] %[^ ]", method, path);
-    printf("method: %s, path: %s\n", method, path);
+    // printf("method: %s, path: %s\n", method, path);
 
     //对中文进行解码
     char decode_path[1024] = { 0 };
@@ -218,16 +41,18 @@ int parse_line(const char *line, int cfd)
     else
     {
         error_print("method error!");
-        return -1;
+        return HTTP_RESPONSE_ERROR;
     }
 
-    return 0;
+    return ret;
 }
 
 // 处理get请求
 int process_get(const char *path, int cfd)
 {
-    printf("path: %s\n", path);
+    int ret = 0;
+
+    // printf("path: %s\n", path);
     // 处理客户端请求的静态资源
     char *file = NULL;
     if (strcmp(path, "/") == 0)
@@ -241,13 +66,13 @@ int process_get(const char *path, int cfd)
 
     // 获取文件的属性
     struct stat st;
-    int ret = stat(file, &st);
+    ret = stat(file, &st);
     if (ret == -1)
     {
         // 文件不存在 --返回404页面
         send_head_msg(cfd, 404, "Not Found", "text/html; charset=utf-8", -1);
         send_file("404.html", cfd);
-        return 0;
+        return -1;
     }
 
     // 判断文件类型
@@ -265,7 +90,7 @@ int process_get(const char *path, int cfd)
         send_file(file, cfd);
     }
 
-    return 0;
+    return ret;
 }
 
 // 发送文件内容到客户端
@@ -281,7 +106,6 @@ int send_file(const char *file, int cfd)
 
     off_t offset = 0;
     off_t size = lseek(fd, 0, SEEK_END);
-    printf("size is :%ld\n", size);
     lseek(fd, 0, SEEK_SET);
     while (offset < size)
     {
@@ -290,8 +114,7 @@ int send_file(const char *file, int cfd)
         {
             printf("file send finish!\n");
         }
-    }
-    
+    }  
     close(fd);
 
     return 0;
@@ -343,8 +166,6 @@ int send_dir(const char *dir, int cfd)
         return -1;
     }
 
-    // printf("num = %d\n", num);
-
     for (int i = 0; i < num; i++)
     {
         char *name = nameList[i]->d_name;
@@ -355,23 +176,19 @@ int send_dir(const char *dir, int cfd)
         if (S_ISDIR(st.st_mode))
         {
             // 目录
-            //printf("目录: %s\n");
             sprintf(buff + strlen(buff), "<tr><td><a href=\"%s/\">%s</a></td><td>%ld</td></tr>", name, name, st.st_size);
         }
         else
         {
             // 文件
-            //printf("文件: \n");
             sprintf(buff + strlen(buff), "<tr><td><a href=\"%s\">%s</a></td><td>%ld</td></tr>", name, name, st.st_size);
         }
-        //printf("buff: %s\n", buff);
         send(cfd, buff, strlen(buff), 0);
         memset(buff, 0, sizeof(buff));
         free(nameList[i]);
     }
     sprintf(buff, "</table></body></html>");
     send(cfd, buff, strlen(buff), 0);
-    // printf("buff: %s\n", buff);
 
     free(nameList);
     return 0;
@@ -412,7 +229,6 @@ int hex_to_int(char c)
 //对中文进行解码
 void decode_msg(char *src, char *dec)
 {
-
     for (; *src != '\0'; dec ++, src ++) 
     {
         if (src[0] == '%' && isxdigit(src[1]) && isxdigit(src[2]))
@@ -428,6 +244,4 @@ void decode_msg(char *src, char *dec)
         }
         
     }
-    printf("dec = %s\n", dec);
-    return;
 }
